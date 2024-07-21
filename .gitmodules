@@ -1,0 +1,3 @@
+[submodule "lib/cutlass"]
+	path = lib/cutlass
+	url = https://github.com/NVIDIA/cutlass
