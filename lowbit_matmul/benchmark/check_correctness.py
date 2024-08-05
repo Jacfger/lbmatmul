@@ -43,7 +43,8 @@ def pack_i4(q):
 
 # %%
 
-A = torch.arange(size, dtype=torch.half).reshape(-1, size)
+# A = torch.arange(size, dtype=torch.half).reshape(-1, size)
+A = torch.arange(size, dtype=torch.float32).reshape(-1, size)
 B = torch.eye(size, dtype=torch.int8).cuda()
 
 y = lowbit_matmul.kernels.matmul_hi4(A.cuda(), pack_i4(B).cuda())

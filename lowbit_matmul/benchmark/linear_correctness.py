@@ -64,7 +64,7 @@ def test_matmul_i4i4():
 
 # %%
 
-benchmark_iter = 1
+benchmark_iter = 10
 benchmark_time = {
     "i4": [],
     "half": [],
@@ -72,7 +72,7 @@ benchmark_time = {
 }
 
 for _ in tqdm(range(benchmark_iter)):
-    A = torch.randint(-8, 7, (seq_len, feature_in), dtype=torch.half)
+    A = torch.randint(-8, 7, (seq_len, feature_in), dtype=torch.float32)
     B = torch.randint(-8, 7, (feature_out, feature_in), dtype=torch.int8) # transposed
     # B = torch.eye(feature_out, feature_in, dtype=torch.int8) # transposed
 
@@ -94,8 +94,8 @@ for _ in tqdm(range(benchmark_iter)):
     y = A_float.cuda() @ B_float.cuda()
     benchmark_time["float"] += [time.perf_counter() - perf_counter]
 
-    # assert (y_i4_i32 == y) # half will not yield correct answer
-    print((y_i4_i32 != y).sum(), (y_i4_i32 != y).sum() / y.numel())
+    assert torch.all(y_i4_i32 == y) # half will not yield correct answer
+    # print((y_i4_i32 != y).sum(), (y_i4_i32 != y).sum() / y.numel())
 
 # benchmark_time = test_matmul_i4i4()
 for k, v in benchmark_time.items():

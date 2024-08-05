@@ -51,15 +51,15 @@ inline __device__ int8_t __lower_i4(int8_t x) {
 inline __device__ int8_t __upper_i4(int8_t x) { return x >> 4; }
 
 /// Naive reference GEMM computation of half precision and 4-bit interger
-__global__ void hi4_mma(int M, int N, int K, __half const *A, int lda,
-                        int8_t const *B, int ldb, __half *C, int ldc) {
+__global__ void hi4_mma(int M, int N, int K, float const *A, int lda,
+                        int8_t const *B, int ldb, float *C, int ldc) {
 
   int i = threadIdx.x + blockIdx.x * blockDim.x;
   int j = threadIdx.y + blockIdx.y * blockDim.y;
   // printf("parameters: M: %d, N: %d, K: %d\n", M, N, K);
   // printf("ld: %d, %d, %d\n", lda, ldb, ldc);
   if (i < M && j < N) {
-    __half accumulator = 0;
+    float accumulator = 0;
 
     for (int k = 0; k < K / 2; ++k) {
       int _k = k << 1;
@@ -70,21 +70,18 @@ __global__ void hi4_mma(int M, int N, int K, __half const *A, int lda,
       // if (b != 0) {
       //   printf("B[%d * %d + %d] = %d\n", j, ldb, k, b);
       // }
-      accumulator += A[i * lda + _k] * __int2half_rn(__lower_i4(b));
-      accumulator += A[i * lda + _k + 1] * __int2half_rn(__upper_i4(b));
-    }
-    if (__half2float(C[i * ldc + j]) != 0) {
-      printf("C[%d * %d + %d] = %f\n", i, ldc, j, __half2float(C[i * ldc + j]));
+      accumulator += A[i * lda + _k] * float(__lower_i4(b));
+      accumulator += A[i * lda + _k + 1] * float(__upper_i4(b));
     }
     C[i * ldc + j] = accumulator; // + C[i + j * ldc];
     // printf("C[%d * %d + %d] = %f\n", i, ldc, j, __half2float(accumulator));
   }
 }
 
-void matmul_hi4_naive_cu(const __half *A, const int8_t *B, uint32_t M,
-                         uint32_t N, uint32_t K, __half *C) {
+void matmul_hi4_naive_cu(const float *A, const int8_t *B, uint32_t M,
+                         uint32_t N, uint32_t K, float *C) {
   // cudaError_t matmul_hi4_naive_cu(int M, int N, int K, float alpha,
-  //                                 __half const *A, int lda, int8_t const *B,
+  //                                 float const *A, int lda, int8_t const *B,
   //                                 int ldb, float beta, float *C, int ldc) {
 
   dim3 block(16, 16);

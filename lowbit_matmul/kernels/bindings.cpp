@@ -1,3 +1,4 @@
+#include "torch/types.h"
 #include <c10/cuda/CUDAGuard.h>
 #include <torch/extension.h>
 // Include all files
@@ -31,11 +32,14 @@ torch::Tensor matmul_hi4_naive(const torch::Tensor &A, const torch::Tensor &B) {
   uint32_t M = A.size(0);
   uint32_t N = B.size(0);
   uint32_t K = A.size(1); // 4 bits packed into 8-bits
-  auto C = torch::zeros({M, N}, torch::dtype(torch::kHalf).device(A.device()));
+  auto C = torch::zeros({M, N}, torch::dtype(torch::kFloat32).device(A.device()));
 
-  matmul_hi4_naive_cu(reinterpret_cast<__half *>(A.data_ptr()),
+  matmul_hi4_naive_cu(A.data_ptr<float>(),
                       B.data_ptr<int8_t>(), M, N, K,
-                      reinterpret_cast<__half *>(C.data_ptr()));
+                      C.data_ptr<float>());
+  // matmul_hi4_naive_cu(reinterpret_cast<float *>(A.data_ptr()),
+  //                     B.data_ptr<int8_t>(), M, N, K,
+  //                     reinterpret_cast<float *>(C.data_ptr()));
 
   return C;
 }
