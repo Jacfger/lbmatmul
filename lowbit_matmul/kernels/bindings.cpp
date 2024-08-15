@@ -11,31 +11,13 @@ torch::Tensor matmul(const torch::Tensor &A, const torch::Tensor &B) {
   torch::checkDeviceType("matmul", {A, B}, at::DeviceType::CUDA);
 
   torch::checkAllSameGPU("matmul", {{A, "A", 0}, {B, "B", 1}});
-  uint32_t M = A.size(0);
-  uint32_t N = B.size(0);
-  uint32_t K = A.size(1) * 2; // 4 bits packed into 8-bits
+  int32_t M = A.size(0);
+  int32_t N = B.size(0);
+  int32_t K = A.size(1) * 2; // 4 bits packed into 8-bits
   auto C = torch::empty({M, N}, torch::dtype(torch::kInt32).device(A.device()));
 
   matmul_host(A.data_ptr<uint8_t>(), B.data_ptr<uint8_t>(), M, N, K,
               C.data_ptr<int32_t>());
-
-  return C;
-}
-
-torch::Tensor matmul_hi4_naive(const torch::Tensor &A, const torch::Tensor &B) {
-  const at::cuda::OptionalCUDAGuard device_guard(device_of(A));
-  torch::checkAllContiguous("matmul", {{A, "A", 0}, {B, "B", 1}});
-  torch::checkDeviceType("matmul", {A, B}, at::DeviceType::CUDA);
-
-  torch::checkAllSameGPU("matmul", {{A, "A", 0}, {B, "B", 1}});
-  uint32_t M = A.size(0);
-  uint32_t N = B.size(0);
-  uint32_t K = A.size(1); // 4 bits packed into 8-bits
-  auto C = torch::zeros({M, N}, torch::dtype(torch::kHalf).device(A.device()));
-
-  matmul_hi4_naive_cu(reinterpret_cast<__half *>(A.data_ptr()),
-                      B.data_ptr<int8_t>(), M, N, K,
-                      reinterpret_cast<__half *>(C.data_ptr()));
 
   return C;
 }
@@ -50,6 +32,4 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
         "output: torch.Tensor(M x N, INT32, CUDA)\n"
         "output = int4Unpacking(A) @ int4Unpacking(B)^T",
         py::arg("A"), py::arg("B"));
-
-  m.def("matmul_hi4", &matmul_hi4_naive, "");
 }
