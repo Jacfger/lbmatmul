@@ -19,6 +19,7 @@ if __name__ == "__main__":
                     "lowbit_matmul/kernels/quant_cuda.cpp",
                     "lowbit_matmul/kernels/quant_cuda_kernel.cu",
                     "lowbit_matmul/kernels/h_s4_gemm.cu",
+                    "lowbit_matmul/kernels/gptq4.cu",
                 ],
             )
         ],

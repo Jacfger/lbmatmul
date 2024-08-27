@@ -3,9 +3,10 @@ import torch
 import time
 import torch.nn as nn
 import numpy as np
+import einops
 
 print(f"torch version {torch.version.cuda}")
-import quant_cuda
+import quant_ops
 
 from packing import pack, unpack
 from tqdm import tqdm
@@ -14,12 +15,14 @@ import numpy as np
 import torch
 import torch.nn as nn
 
+import quant_ops
+
 
 def quantize(x, scale, zero, maxq):
     if maxq < 0:
         return (x > scale / 2).float() * scale + (x < zero / 2).float() * zero
-    q = torch.clamp(torch.round(x / scale) + zero, 0, maxq)
-    return scale * (q - zero)
+    return torch.clamp(torch.round(x / scale) + zero, 0, maxq)
+    # return scale * (q - zero)
 
 
 class Quantizer(nn.Module):
@@ -146,7 +149,7 @@ class Quantizer(nn.Module):
         return torch.all(self.scale != 0)
 
 
-import quant_cuda
+import quant_ops
 
 
 ## This is the mask kernel part
@@ -159,6 +162,8 @@ def generate_input():
     B = torch.rand((4096, 1536), dtype=torch.float16, device="cuda")
     return mask, A, B
 
+
+print(f"{'Only masking':=^80}")
 
 mask, A, B = generate_input()
 
@@ -175,64 +180,125 @@ pack_mask = pack(mask, 8, 1, by_rows=True, device="cuda")
 pack_mask = pack_mask.to(dtype=torch.uint8)
 
 weight_packedmask = B @ A
-quant_cuda._nonmul_packedmask_2d(weight_packedmask, pack_mask)
+quant_ops._nonmul_packedmask_2d(weight_packedmask, pack_mask)
 torch.cuda.synchronize()
-# print(weight)
-# print(weight_packedmask)
+print("Kern:", weight_packedmask)
+print("Simu:", weight)
 assert (weight_packedmask == weight).all(), "Panick, two masks operation are not equal"
 
 
 # %% # This is the FP16 x INT4 part
-import marlin
+
+print(f"{'FP16 x INT4':=^80}")
+
+
+class qLayer(nn.Module):
+    def __init__(self, in_features, out_features):
+        super().__init__()
+        self.in_features = in_features
+        self.out_features = out_features
+        self.register_buffer(
+            "qweight",
+            torch.empty((self.in_features // 2, self.out_features), dtype=torch.uint8),
+        )
+        self.register_buffer("scales", torch.empty(self.out_features, dtype=torch.half))
+        self.register_buffer("zeroes", torch.empty(self.out_features, dtype=torch.half))
+
+    def weight(self):
+        return self.scales * self.unpack_i4(self.qweight).float() - self.zeroes
+
+    @staticmethod
+    def pack_i4(q):
+        # assume dim 0
+        # assert torch.is_signed(q), "The tensor to be packed should be signed int"
+        q_i8 = q.to(dtype=torch.int8) & 0xF
+        q_i4 = q_i8[0::2] | (q_i8[1::2] << 4)  # [a, b] -> 0x{b:x}{a:x}
+        return q_i4
+
+    @staticmethod
+    def unpack_i4(q):
+        # assume dim 0
+        q = q.to(dtype=torch.int8)
+        return einops.rearrange(
+            torch.stack([q & 0xF, (q >> 4) & 0xF], dim=0), "b k nq -> (k b) nq"
+        )
+
+    def forward(self, x):
+        return quant_ops.mat4mul(x, self.qweight, self.scales, self.zeroes)
+
 
 DEV = "cuda"
-M = 10
+M = 2048
 K = 4 * 4096
 N = 4096
 
-layer = nn.Linear(K, N)
-MAT = torch.randn(10, K, dtype=torch.half).to(DEV)
+layer = nn.Linear(K, N, dtype=torch.half).cuda()
+MAT = torch.rand(M, K, dtype=torch.half).to(DEV)
 
 quantizer = Quantizer()
 quantizer.configure(4, perchannel=True, sym=False, mse=False)
 quantizer.find_params(layer.weight.data, weight=True)
-layer.weight.data = quantize(
-    layer.weight.data, quantizer.scale, quantizer.zero, quantizer.maxq
-)
 
-qlayer = marlin.Layer(layer.in_features, layer.out_features)
-qlayer.pack(layer, quantizer.scale)
+qlayer = qLayer(K, N)
 
+qweight = quantize(layer.weight, quantizer.scale, quantizer.zero, quantizer.maxq).T
+
+qlayer.qweight = qLayer.pack_i4(qweight).to(torch.uint8).contiguous()
+qlayer.scales = quantizer.scale.flatten().half()
+qlayer.zeroes = (quantizer.zero * quantizer.scale).flatten().half()
 qlayer = qlayer.to(DEV)
-layer = layer.to(DEV)
+
 
 with torch.no_grad():
+    print("Kern:", qlayer(MAT))
     print("Simu:", layer(MAT))
-    print("Kern:", qlayer(MAT.half()), "(faster)")
+# %%
+# This is the INT4 X INT4 part
 
-# %% # This is the INT4 X INT4 part
+import quarot
 
+print(f"{'INT4 x INT4':=^80}")
+
+# require add `find_packages` in setup.py in QuaRot
 DEV = "cuda"
 
-# A = torch.rand((1536, 11008), dtype=torch.float16, device="cuda")
 A = torch.rand((11008, 1536), dtype=torch.float16, device="cuda")
 B = torch.rand((4096, 1536), dtype=torch.float16, device="cuda")
+mask = torch.randint(0, 2, (11008, 4096), dtype=torch.uint8, device="cuda")
 
-quantizerA = Quantizer()
-quantizerA.configure(4, perchannel=True, sym=False, mse=False)
-quantizerA.find_params(A.T, weight=True)
-A = quantize(A, quantizerA.scale, quantizerA.zero, quantizerA.maxq)
+quantizer = quarot.nn.Quantizer()
+Ap = quantizer(A)
+Bp = quantizer(B)
 
-quantizerB = Quantizer()
-quantizerB.configure(4, perchannel=True, sym=False, mse=False)
-quantizerB.find_params(B, weight=True)
-B = quantize(B, quantizerB.scale, quantizerB.zero, quantizerB.maxq)
+# A @ B.T (11008, 4096)
+C = quarot.sym_dequant(
+    quarot.matmul(Ap.quantized_x, Bp.quantized_x), Ap.scales_x, Bp.scales_x
+)
 
-### INT4 B * INT4 A here (A is transpose)
+C_ref = A.float() @ B.float().T
+
+print("Kern:", C, C.shape)
+print("Simu:", C_ref, C_ref.shape)
 
 
-## This is the mask kernel + INT4 X INT4 part
+# %%
 
-### INT4 A * INT4 B first
+print(f"{'Masking':=^80}")
+# Kernel
+pack_mask = pack(mask.clone(), 8, 1, by_rows=True, device="cuda")
+pack_mask = pack_mask.to(dtype=torch.uint8)
+quant_ops._nonmul_packedmask_2d(C, pack_mask) # C is modified in place
+torch.cuda.synchronize()
 
-### Then masking
+# Simulation
+pack_mask = pack(mask.clone(), 8, 1, by_rows=True, device="cuda")
+pack_mask = pack_mask.to(dtype=torch.uint8)
+unpack_mask = unpack(pack_mask, data_size=1, by_rows=True, device="cuda")
+weight_ref = C_ref * unpack_mask
+
+print("Kern:", C)
+print("Simu:", weight_ref)
+# print(C, weight_ref, sep="\n")
+print("Max diff:", (C - weight_ref).max(), "Min diff:", (C - weight_ref).min())
+
+# %%
