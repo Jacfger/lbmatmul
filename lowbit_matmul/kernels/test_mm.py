@@ -188,7 +188,7 @@ def pack_i4_64(q):
         # | (q_i8[15::16] << 60)
     )
     return q_i4
-M, K, N = 1, 256, 256
+M, K, N = 1, 512, 1024
 # B = torch.randint(0, 16, (K, N), dtype=torch.int64)
 B = torch.arange(0, N, dtype=torch.int32) & 0xF
 B = torch.stack([B] * K, dim=0)
@@ -197,12 +197,14 @@ B.shape , B_q.shape
 # %%
 mul = torch.zeros(1, N, dtype=torch.float32).cuda()
 vec = torch.ones(K, dtype=torch.float32).cuda()
-scales = torch.ones(K, dtype=torch.float32).cuda()
-zeros = torch.zeros(K, dtype=torch.float32).cuda()
+scales = torch.ones(N, dtype=torch.float32).cuda()
+zeros = torch.zeros(N, dtype=torch.float32).cuda()
+quant_ops.vec_mat4mul(vec.clone(), B_q, mul, scales, zeros)
 torch.cuda.synchronize()
-quant_ops.vec_mat4mul(vec.unsqueeze(0), B_q, mul, scales, zeros)
-mul, vec @ B.to(torch.float32).cuda()
-
+print(vec)
+mul, torch.ones(K, dtype=torch.float32).cuda() @ B.to(torch.float32).cuda()
+# %%
+vec, B
 # %%
 m, k, n = 1, 12288 * 2, 12288
 # m, k, n = 1, 32, 1

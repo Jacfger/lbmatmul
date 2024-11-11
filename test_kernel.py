@@ -239,7 +239,9 @@ quantizer = Quantizer()
 quantizer.configure(4, perchannel=True, sym=False, mse=False)
 quantizer.find_params(layer.weight.data, weight=True)
 
-qlayer = qLayer(K, N)
+import marlin
+# qlayer = qLayer(K, N)
+qlayer = marlin.Layer(K, N)
 
 qweight = quantize(layer.weight, quantizer.scale, quantizer.zero, quantizer.maxq).T
 
@@ -250,8 +252,16 @@ qlayer = qlayer.to(DEV)
 
 
 with torch.no_grad():
+    fp16i4_tick = time.perf_counter()
     print("Kern:", qlayer(MAT))
+    # torch.cuda.synchronize()
+    fp16i4_tock = time.perf_counter()
+    fp16fp16_tick = time.perf_counter()
     print("Simu:", layer(MAT))
+    fp16fp16_tock = time.perf_counter()
+
+    print("Kernel time:", fp16i4_tock - fp16i4_tick)
+    print("Simulation time:", fp16fp16_tock - fp16fp16_tick)
 # %%
 # This is the INT4 X INT4 part
 
@@ -262,21 +272,38 @@ print(f"{'INT4 x INT4':=^80}")
 # require add `find_packages` in setup.py in QuaRot
 DEV = "cuda"
 
-A = torch.rand((11008, 1536), dtype=torch.float16, device="cuda")
-B = torch.rand((4096, 1536), dtype=torch.float16, device="cuda")
+A = torch.rand((1536, 11008), dtype=torch.float16, device="cuda")
+B = torch.rand((4096, 11008), dtype=torch.float16, device="cuda")
+BT = torch.rand((1536, 4096), dtype=torch.float16, device="cuda")
 mask = torch.randint(0, 2, (11008, 4096), dtype=torch.uint8, device="cuda")
+x = torch.rand((100, 1536), dtype=torch.float16, device="cuda")
+weight = torch.rand((1536, 4096), dtype=torch.float16, device="cuda")
 
 quantizer = quarot.nn.Quantizer()
 Ap = quantizer(A)
 Bp = quantizer(B)
+pack_mask = pack(mask.clone(), 8, 1, by_rows=True, device="cuda")
+pack_mask = pack_mask.to(dtype=torch.uint8)
 
 # A @ B.T (11008, 4096)
+kern_tick = time.perf_counter()
+# quarot.matmul
+i4i4 = quarot._CUDA.matmul(Ap.quantized_x, Bp.quantized_x)
+print("i4i4 multiplication", time.perf_counter() - kern_tick)
+full_tick = time.perf_counter()
+c_check = A @ B.T
+print("full prec", time.perf_counter() - full_tick)
+print(c_check.shape, i4i4.shape)
 C = quarot.sym_dequant(
-    quarot.matmul(Ap.quantized_x, Bp.quantized_x), Ap.scales_x, Bp.scales_x
+    i4i4, Ap.scales_x, Bp.scales_x
 )
+quant_ops._nonmul_packedmask_2d(C, pack_mask) # C is modified in place
+torch.cuda.synchronize()
+kern_tick = time.perf_counter()
+y_q = x @ C
+kern_tock = time.perf_counter()
 
 C_ref = A.float() @ B.float().T
-
 print("Kern:", C, C.shape)
 print("Simu:", C_ref, C_ref.shape)
 
@@ -285,10 +312,6 @@ print("Simu:", C_ref, C_ref.shape)
 
 print(f"{'Masking':=^80}")
 # Kernel
-pack_mask = pack(mask.clone(), 8, 1, by_rows=True, device="cuda")
-pack_mask = pack_mask.to(dtype=torch.uint8)
-quant_ops._nonmul_packedmask_2d(C, pack_mask) # C is modified in place
-torch.cuda.synchronize()
 
 # Simulation
 pack_mask = pack(mask.clone(), 8, 1, by_rows=True, device="cuda")
@@ -302,3 +325,8 @@ print("Simu:", weight_ref)
 print("Max diff:", (C - weight_ref).max(), "Min diff:", (C - weight_ref).min())
 
 # %%
+fullprec_tick = time.perf_counter()
+y = x @ weight
+fullprec_tock = time.perf_counter()
+print("i4i4m time", kern_tock - kern_tick)
+print("Full precision time:", fullprec_tock - fullprec_tick)

@@ -5,6 +5,10 @@
 #include <torch/all.h>
 #include <torch/python.h>
 
+__device__ inline unsigned int as_unsigned(int i) {
+  return *reinterpret_cast<unsigned int *>(&i);
+}
+
 #if 1
 constexpr int BLOCKWIDTH = 256;
 constexpr int BLOCKHEIGHT = 256; // 24
@@ -20,13 +24,23 @@ vec_mm_s4_kernel(const T *__restrict__ vec, const int32_t *__restrict__ mat,
   __shared__ T blockvec[BLOCKHEIGHT];
   T val = 0;
   // if (threadIdx.x < BLOCKHEIGHT) {
+  // BLOCKWIDTH == blockdim.x, 1 == blockdim.y
 #pragma unroll
   for (int i = 0; i < BLOCKHEIGHT; i += BLOCKWIDTH) {
-    val = vec[blockIdx.x * BLOCKHEIGHT + i + threadIdx.x];
+    size_t vec_idx = blockIdx.x * BLOCKHEIGHT + i + threadIdx.x;
+    if (vec_idx < K) {
+      val = vec[blockIdx.x * BLOCKHEIGHT + i + threadIdx.x];
+      printf("vec[%d] = %f, K: %d\n", (int)vec_idx, val, K);
+    }
     blockvec[i + threadIdx.x] = val;
   }
 
   __syncthreads();
+
+  if (threadIdx.x == 0) {
+    printf("row: %d, col: %d, griddim.x: %d, griddim.y: %d\n", row, col,
+           gridDim.x, gridDim.y);
+  }
   // val = vec[blockIdx.x * BLOCKHEIGHT + threadIdx.x];
   // blockvec[threadIdx.x] = val;
   // }
@@ -40,52 +54,78 @@ vec_mm_s4_kernel(const T *__restrict__ vec, const int32_t *__restrict__ mat,
 
   T res = 0;
   int i = N * row + col;
-  unsigned int tmp;
+  // unsigned int tmp;
+  printf("row: %d, col: %d, i: %d, N: %d\n", row, col, i, N);
+  if (threadIdx.x == 33)
+    for (int shmem_idx = 0; shmem_idx < BLOCKHEIGHT; shmem_idx += 1) {
+      printf("blockvec[%d]: %f\n", shmem_idx, blockvec[shmem_idx]);
+    }
 
 #pragma unroll
-  for (size_t k = 0; k < BLOCKHEIGHT; k += 32) {
+  for (int k = 0; k < BLOCKHEIGHT; k += 32) {
+    if (threadIdx.x == 33) {
+      printf("row: %d, col: %d, i: %d, k: %d, N: %d, mat[i]: %d\n", row, col, i,
+             k, N, mat[i]);
+    }
     // while (k < BLOCKHEIGHT) {
     // 73516240
-    tmp = mat[i];
-    res += (scale * T((tmp >> 0) & 0xF) - zero) * blockvec[k + 0];
-    res += (scale * T((tmp >> 4) & 0xF) - zero) * blockvec[k + 1];
-    res += (scale * T((tmp >> 8) & 0xF) - zero) * blockvec[k + 2];
-    res += (scale * T((tmp >> 12) & 0xF) - zero) * blockvec[k + 3];
-    res += (scale * T((tmp >> 16) & 0xF) - zero) * blockvec[k + 4];
-    res += (scale * T((tmp >> 20) & 0xF) - zero) * blockvec[k + 5];
-    res += (scale * T((tmp >> 24) & 0xF) - zero) * blockvec[k + 6];
-    res += (scale * T((tmp >> 28) & 0xF) - zero) * blockvec[k + 7];
+    const uint32_t tmp1 = (col < N && i < K * N)
+                              ? *reinterpret_cast<const uint32_t *>(&mat[i])
+                              : 0;
+    res += (scale * T((tmp1 >> 0) & 0xF) - zero) * blockvec[k + 0];
+    res += (scale * T((tmp1 >> 4) & 0xF) - zero) * blockvec[k + 1];
+    res += (scale * T((tmp1 >> 8) & 0xF) - zero) * blockvec[k + 2];
+    res += (scale * T((tmp1 >> 12) & 0xF) - zero) * blockvec[k + 3];
+    res += (scale * T((tmp1 >> 16) & 0xF) - zero) * blockvec[k + 4];
+    res += (scale * T((tmp1 >> 20) & 0xF) - zero) * blockvec[k + 5];
+    res += (scale * T((tmp1 >> 24) & 0xF) - zero) * blockvec[k + 6];
+    res += (scale * T((tmp1 >> 28) & 0xF) - zero) * blockvec[k + 7];
     i += N;
-    tmp = mat[i];
-    res += (scale * T((tmp >> 0) & 0xF) - zero) * blockvec[k + 8];
-    res += (scale * T((tmp >> 4) & 0xF) - zero) * blockvec[k + 9];
-    res += (scale * T((tmp >> 8) & 0xF) - zero) * blockvec[k + 10];
-    res += (scale * T((tmp >> 12) & 0xF) - zero) * blockvec[k + 11];
-    res += (scale * T((tmp >> 16) & 0xF) - zero) * blockvec[k + 12];
-    res += (scale * T((tmp >> 20) & 0xF) - zero) * blockvec[k + 13];
-    res += (scale * T((tmp >> 24) & 0xF) - zero) * blockvec[k + 14];
-    res += (scale * T((tmp >> 28) & 0xF) - zero) * blockvec[k + 15];
+    if (threadIdx.x == 33)
+      printf("res: %f, tmp1: %d\n", res, tmp1);
+
+    const uint32_t tmp2 = (col < N && i < K * N)
+                              ? *reinterpret_cast<const uint32_t *>(&mat[i])
+                              : 0;
+    res += (scale * T((tmp2 >> 0) & 0xF) - zero) * blockvec[k + 8];
+    res += (scale * T((tmp2 >> 4) & 0xF) - zero) * blockvec[k + 9];
+    res += (scale * T((tmp2 >> 8) & 0xF) - zero) * blockvec[k + 10];
+    res += (scale * T((tmp2 >> 12) & 0xF) - zero) * blockvec[k + 11];
+    res += (scale * T((tmp2 >> 16) & 0xF) - zero) * blockvec[k + 12];
+    res += (scale * T((tmp2 >> 20) & 0xF) - zero) * blockvec[k + 13];
+    res += (scale * T((tmp2 >> 24) & 0xF) - zero) * blockvec[k + 14];
+    res += (scale * T((tmp2 >> 28) & 0xF) - zero) * blockvec[k + 15];
     i += N;
-    tmp = mat[i];
-    res += (scale * T((tmp >> 0) & 0xF) - zero) * blockvec[k + 16];
-    res += (scale * T((tmp >> 4) & 0xF) - zero) * blockvec[k + 17];
-    res += (scale * T((tmp >> 8) & 0xF) - zero) * blockvec[k + 18];
-    res += (scale * T((tmp >> 12) & 0xF) - zero) * blockvec[k + 19];
-    res += (scale * T((tmp >> 16) & 0xF) - zero) * blockvec[k + 20];
-    res += (scale * T((tmp >> 20) & 0xF) - zero) * blockvec[k + 21];
-    res += (scale * T((tmp >> 24) & 0xF) - zero) * blockvec[k + 22];
-    res += (scale * T((tmp >> 28) & 0xF) - zero) * blockvec[k + 23];
+    if (threadIdx.x == 33)
+      printf("res: %f\n", res);
+    const uint32_t tmp3 = (col < N && i < K * N)
+                              ? *reinterpret_cast<const uint32_t *>(&mat[i])
+                              : 0;
+    res += (scale * T((tmp3 >> 0) & 0xF) - zero) * blockvec[k + 16];
+    res += (scale * T((tmp3 >> 4) & 0xF) - zero) * blockvec[k + 17];
+    res += (scale * T((tmp3 >> 8) & 0xF) - zero) * blockvec[k + 18];
+    res += (scale * T((tmp3 >> 12) & 0xF) - zero) * blockvec[k + 19];
+    res += (scale * T((tmp3 >> 16) & 0xF) - zero) * blockvec[k + 20];
+    res += (scale * T((tmp3 >> 20) & 0xF) - zero) * blockvec[k + 21];
+    res += (scale * T((tmp3 >> 24) & 0xF) - zero) * blockvec[k + 22];
+    res += (scale * T((tmp3 >> 28) & 0xF) - zero) * blockvec[k + 23];
     i += N;
-    tmp = mat[i];
-    res += (scale * T((tmp >> 0) & 0xF) - zero) * blockvec[k + 24];
-    res += (scale * T((tmp >> 4) & 0xF) - zero) * blockvec[k + 25];
-    res += (scale * T((tmp >> 8) & 0xF) - zero) * blockvec[k + 26];
-    res += (scale * T((tmp >> 12) & 0xF) - zero) * blockvec[k + 27];
-    res += (scale * T((tmp >> 16) & 0xF) - zero) * blockvec[k + 28];
-    res += (scale * T((tmp >> 20) & 0xF) - zero) * blockvec[k + 29];
-    res += (scale * T((tmp >> 24) & 0xF) - zero) * blockvec[k + 30];
-    res += (scale * T((tmp >> 28) & 0xF) - zero) * blockvec[k + 31];
+    if (threadIdx.x == 33)
+      printf("res: %f\n", res);
+    const uint32_t tmp4 = (col < N && i < K * N)
+                              ? *reinterpret_cast<const uint32_t *>(&mat[i])
+                              : 0;
+    res += (scale * T((tmp4 >> 0) & 0xF) - zero) * blockvec[k + 24];
+    res += (scale * T((tmp4 >> 4) & 0xF) - zero) * blockvec[k + 25];
+    res += (scale * T((tmp4 >> 8) & 0xF) - zero) * blockvec[k + 26];
+    res += (scale * T((tmp4 >> 12) & 0xF) - zero) * blockvec[k + 27];
+    res += (scale * T((tmp4 >> 16) & 0xF) - zero) * blockvec[k + 28];
+    res += (scale * T((tmp4 >> 20) & 0xF) - zero) * blockvec[k + 29];
+    res += (scale * T((tmp4 >> 24) & 0xF) - zero) * blockvec[k + 30];
+    res += (scale * T((tmp4 >> 28) & 0xF) - zero) * blockvec[k + 31];
     i += N;
+    if (threadIdx.x == 33)
+      printf("res: %f\n", res);
     // tmp = mat[i];
     // res += (scale * T((tmp >> 0) & 0xF) - zero) * blockvec[k + 0];
     // res += (scale * T((tmp >> 4) & 0xF) - zero) * blockvec[k + 1];
@@ -183,10 +223,6 @@ void vec_mm_s4_cuda(torch::Tensor vec, torch::Tensor mat, torch::Tensor mul,
 
 const int BLOCKWIDTH = 256;
 const int BLOCKHEIGHT = 32;
-
-__device__ inline unsigned int as_unsigned(int i) {
-  return *reinterpret_cast<unsigned int *>(&i);
-}
 
 template <typename scalar_t>
 __global__ void

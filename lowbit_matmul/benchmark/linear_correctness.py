@@ -144,11 +144,12 @@ def pack_i4(q):
     return q_i4
 
 
-bsz, seq_len = 1, 1
+bsz, seq_len = 1, 2048 
 # feature_in, feature_out = (8192, 28672)
-feature_in, feature_out = (12288 * 4, 12288)
+# feature_in, feature_out = (12288 * 4, 12288)
+feature_in, feature_out = (4 * 4096, 4096)
 for _ in tqdm(range(benchmark_iter)):
-    type = torch.float
+    type = torch.half
     A = torch.rand(seq_len, feature_in, dtype=type)
     B = torch.randint(0, 16, (feature_in, feature_out), dtype=torch.int8)  # transposed
     # B = torch.eye(feature_out, feature_in, dtype=torch.int8) # transposed
@@ -165,10 +166,11 @@ for _ in tqdm(range(benchmark_iter)):
     torch.cuda.synchronize()
     benchmark_time["float"] += [time.perf_counter() - perf_counter]
 
+    print(A.dtype, B_i4.dtype)
     perf_counter = time.perf_counter()
     # print(A.shape, B_i4.shape)
-    y_i4_i32 = quant_ops.matmul_test(A.cuda(), B_i4.cuda(), scales.cuda(), zeros.cuda())
-    # quant_ops.matmul_test(A.cuda(), B_i4.cuda(), scales.cuda(), zeros.cuda(), y_i4_i32)
+    y_i4_i32 = quant_ops.mat4mul(A.cuda(), B_i4.cuda(), scales.cuda(), zeros.cuda())
+    # quant_ops.mat4mul(A.cuda(), B_i4.cuda(), scales.cuda(), zeros.cuda(), y_i4_i32)
     torch.cuda.synchronize()
     benchmark_time["i4"] += [time.perf_counter() - perf_counter]
 
